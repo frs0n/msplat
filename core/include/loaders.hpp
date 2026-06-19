@@ -5,6 +5,7 @@
 
 // Format-specific loaders
 namespace loaders {
+    InputData loadMemo(const std::string &projectRoot);
     InputData loadColmap(const std::string &projectRoot, const std::string &imageSourcePath = "");
     InputData loadNerfstudio(const std::string &projectRoot);
     InputData loadPolycam(const std::string &projectRoot);

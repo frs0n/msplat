@@ -21,7 +21,7 @@ int main(int argc, char *argv[]) {
 
     // Required
     std::string projectRoot;
-    app.add_option("input", projectRoot, "Path to dataset (COLMAP, Nerfstudio, Polycam)")
+    app.add_option("input", projectRoot, "Path to dataset (memo capture, COLMAP, Nerfstudio, Polycam)")
         ->required()
         ->check(CLI::ExistingDirectory);
 

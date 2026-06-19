@@ -87,7 +87,7 @@ pose = dataset.camera_pose(0)   # (4, 4) cam-to-world matrix
 img = trainer.render_from_pose(pose)  # numpy (H, W, 3) float32
 ```
 
-Supported dataset formats: COLMAP, Nerfstudio, Polycam.
+Supported dataset formats: memo capture, COLMAP, Nerfstudio, Polycam.
 
 Type stubs (`_core.pyi`) are included for IDE autocompletion.
 
@@ -118,7 +118,7 @@ Build the XCFramework (one-time, from repo root):
 ```swift
 import Msplat
 
-let dataset = GaussianDataset(path: "path/to/colmap/", downscaleFactor: 4.0)
+let dataset = GaussianDataset(path: "path/to/memo_scan/", downscaleFactor: 4.0)
 let trainer = GaussianTrainer(dataset: dataset)
 
 for _ in 0..<1000 {

@@ -17,7 +17,7 @@ public class GaussianDataset {
 
     /// Load a dataset from disk.
     /// - Parameters:
-    ///   - path: Path to COLMAP, Nerfstudio, or other supported format.
+    ///   - path: Path to a memo capture, COLMAP, Nerfstudio, or other supported format.
     ///   - downscaleFactor: Image downscale factor (1.0 = full resolution).
     ///   - evalMode: If true, split cameras into train/test sets.
     ///   - testEvery: Hold out every Nth image for evaluation.

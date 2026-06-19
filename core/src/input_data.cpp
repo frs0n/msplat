@@ -200,6 +200,12 @@ void InputData::saveCameras(const std::string &filename, bool keepCrs) const {
 InputData inputDataFromX(const std::string &path, const std::string &colmapImagePath) {
     fs::path root(path);
 
+    // memo native capture: ARKit keyframes + fused LiDAR prior.
+    if (fs::exists(root / "capture.json") &&
+        fs::exists(root / "arkit" / "frames.jsonl") &&
+        fs::exists(root / "depth" / "fused_points.ply"))
+        return loaders::loadMemo(path);
+
     // Nerfstudio: transforms.json
     if (fs::exists(root / "transforms.json"))
         return loaders::loadNerfstudio(path);
@@ -213,5 +219,5 @@ InputData inputDataFromX(const std::string &path, const std::string &colmapImage
         return loaders::loadPolycam(path);
 
     throw std::runtime_error("Unrecognized dataset format in: " + path +
-        "\nSupported: COLMAP (cameras.bin), Nerfstudio (transforms.json), Polycam (keyframes/)");
+        "\nSupported: memo capture (capture.json), COLMAP (cameras.bin), Nerfstudio (transforms.json), Polycam (keyframes/)");
 }
