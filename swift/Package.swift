@@ -3,7 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "Msplat",
-    platforms: [.macOS(.v15)],
+    platforms: [
+        .iOS(.v18),
+        .macOS(.v15),
+    ],
     products: [
         .library(name: "Msplat", targets: ["Msplat"]),
     ],
