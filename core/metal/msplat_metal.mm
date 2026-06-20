@@ -450,11 +450,33 @@ struct FusedTensorCache {
             v_features_rest = mtensor_empty(dev, {(int64_t)np, (int64_t)frb, 3}, DType::Float32);
         }
     }
+
+    size_t estimatedBytes() const {
+        const MTensor* tensors[] = {
+            &xys, &depths, &radii_out, &conics, &num_tiles_hit, &colors, &aabb,
+            &gaussian_ids, &packed_xy_opac, &packed_conic, &packed_rgb,
+            &out_img, &final_Ts, &final_idx, &loss_intermediates, &ssim_h_buf,
+            &tile_bins, &loss_sum, &tile_offsets, &tile_scatter_counters,
+            &prealloc_bins, &block_totals, &overflow_flag,
+            &chunk_T, &chunk_C, &chunk_final_idx, &prefix_T, &after_C,
+            &v_rendered, &v_xy, &v_conic, &v_colors_rast, &v_opacity, &v_depth,
+            &v_mean3d, &v_scale, &v_quat, &v_features_dc, &v_features_rest
+        };
+        size_t bytes = 0;
+        for (const MTensor* tensor : tensors) {
+            if (tensor->defined()) bytes += tensor->nbytes();
+        }
+        return bytes;
+    }
 };
 static FusedTensorCache g_tcache;
 
 void cleanup_msplat_metal() {
     g_tcache = FusedTensorCache{};
+}
+
+size_t msplat_cached_tensor_bytes() {
+    return g_tcache.estimatedBytes();
 }
 
 // Internal forward pipeline — used by both msplat_render and msplat_train_step.

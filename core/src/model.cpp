@@ -194,6 +194,25 @@ void Model::refreshViews(){
     }
 }
 
+size_t Model::estimatedGpuBytes() const {
+    size_t bytes = 0;
+    const MTensor* tensors[] = {
+        &means_buf, &scales_buf, &quats_buf, &featuresDc_buf, &featuresRest_buf, &opacities_buf,
+        &densify_split_flag, &densify_dup_flag, &densify_split_prefix, &densify_dup_prefix,
+        &densify_keep_flag, &densify_keep_prefix, &densify_block_totals,
+        &densify_compact_scratch, &densify_random_samples,
+        &radii, &xysGradNorm, &visCounts, &max2DSize, &backgroundColor, &window2d
+    };
+    for (const MTensor* tensor : tensors) {
+        if (tensor->defined()) bytes += tensor->nbytes();
+    }
+    for (int g = 0; g < N_ADAM_GROUPS; g++) {
+        if (adam_exp_avg_buf[g].defined()) bytes += adam_exp_avg_buf[g].nbytes();
+        if (adam_exp_avg_sq_buf[g].defined()) bytes += adam_exp_avg_sq_buf[g].nbytes();
+    }
+    return bytes;
+}
+
 void Model::ensureCapacity(int needed){
     if (needed <= buf_capacity) return;
     int new_cap = std::max(needed, buf_capacity * 2);

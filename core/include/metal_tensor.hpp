@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cassert>
 #include <cstring>
+#include <utility>
+#include <CoreFoundation/CoreFoundation.h>
 
 // Forward-declare the Metal buffer type for C++ compatibility.
 // Full Metal/Metal.h is only needed in .mm files.
@@ -36,6 +38,31 @@ inline size_t dtypeSize(DType dt) {
 class MTensor {
 public:
     MTensor() = default;
+    ~MTensor() { reset(); }
+
+    MTensor(const MTensor& other) {
+        copyFrom(other);
+    }
+
+    MTensor& operator=(const MTensor& other) {
+        if (this != &other) {
+            reset();
+            copyFrom(other);
+        }
+        return *this;
+    }
+
+    MTensor(MTensor&& other) noexcept {
+        moveFrom(std::move(other));
+    }
+
+    MTensor& operator=(MTensor&& other) noexcept {
+        if (this != &other) {
+            reset();
+            moveFrom(std::move(other));
+        }
+        return *this;
+    }
 
 #ifdef __OBJC__
     // GPU allocation (Objective-C++ only)
@@ -46,7 +73,12 @@ public:
         size_t bytes = _numel * dtypeSize(_dtype);
         if (bytes == 0) bytes = 4;
         id<MTLBuffer> buf = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+#if __has_feature(objc_arc)
         _buffer = (__bridge_retained void*)buf;
+#else
+        _buffer = (void*)buf;
+#endif
+        _ownsBuffer = true;
         _data = [buf contents];  // cache CPU-accessible pointer for C++ access
     }
 
@@ -100,11 +132,10 @@ public:
     }
 
     void reset() {
-#ifdef __OBJC__
-        if (_buffer) { CFRelease(_buffer); }
-#endif
+        if (_buffer && _ownsBuffer) CFRelease(_buffer);
         _buffer = nullptr;
         _data = nullptr;
+        _ownsBuffer = false;
         _cpu_data.clear();
         _shape.clear();
         _numel = 0;
@@ -126,6 +157,7 @@ public:
         MTensor v;
         v._buffer = _buffer;  // shares the buffer (non-owning)
         v._data = _data;      // shares the CPU-accessible pointer
+        v._ownsBuffer = false;
         v._shape = _shape;
         v._shape[0] = n;
         v._dtype = _dtype;
@@ -134,8 +166,39 @@ public:
     }
 
 private:
+    void copyFrom(const MTensor& other) {
+        _shape = other._shape;
+        _dtype = other._dtype;
+        _numel = other._numel;
+        _data = other._data;
+        _buffer = other._buffer;
+        _cpu_data = other._cpu_data;
+        _ownsBuffer = false;
+        if (_buffer) {
+            CFRetain(_buffer);
+            _ownsBuffer = true;
+        }
+    }
+
+    void moveFrom(MTensor&& other) {
+        _buffer = other._buffer;
+        _data = other._data;
+        _cpu_data = std::move(other._cpu_data);
+        _shape = std::move(other._shape);
+        _dtype = other._dtype;
+        _numel = other._numel;
+        _ownsBuffer = other._ownsBuffer;
+
+        other._buffer = nullptr;
+        other._data = nullptr;
+        other._shape.clear();
+        other._numel = 0;
+        other._ownsBuffer = false;
+    }
+
     void* _buffer = nullptr;  // retained id<MTLBuffer> as void*
     void* _data = nullptr;    // cached CPU-accessible pointer (shared memory on Apple Silicon)
+    bool _ownsBuffer = false;
     std::vector<uint8_t> _cpu_data;
     std::vector<int64_t> _shape;
     DType _dtype = DType::Float32;

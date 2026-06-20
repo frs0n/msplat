@@ -1,6 +1,7 @@
 #ifndef MODEL_H
 #define MODEL_H
 
+#include <cstddef>
 #include "metal_tensor.hpp"
 #include "ssim.hpp"
 #include "input_data.hpp"
@@ -39,6 +40,7 @@ struct Model{
   CamSetup prepareCam(Camera& cam, int step);
   void fullIteration(Camera& cam, int step, MTensor &gt, float ssimWeight);
   MTensor render(Camera& cam, int step);
+  size_t estimatedGpuBytes() const;
 
   MTensor means;
   MTensor scales;

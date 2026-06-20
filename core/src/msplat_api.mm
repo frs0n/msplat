@@ -16,8 +16,34 @@
 #include <unordered_map>
 
 #include <TargetConditionals.h>
+#include <mach/mach.h>
 
 namespace msplat {
+
+namespace {
+
+size_t currentPhysFootprintBytes() {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    kern_return_t result = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count);
+    return result == KERN_SUCCESS ? (size_t)info.phys_footprint : 0;
+}
+
+int memoryLogInterval() {
+    static int interval = [] {
+        if (const char* env = std::getenv("MSPLAT_MEM_LOG_EVERY")) {
+            return std::atoi(env);
+        }
+        return 0;
+    }();
+    return interval;
+}
+
+double mb(size_t bytes) {
+    return (double)bytes / (1024.0 * 1024.0);
+}
+
+} // namespace
 
 // ── Dataset::Impl ───────────────────────────────────────────────────────────
 
@@ -195,6 +221,23 @@ Stats Trainer::step() {
     impl->model->schedulersStep(impl->currentStep);
     impl->model->afterTrain(impl->currentStep);
     msplat_commit();
+
+    int logEvery = memoryLogInterval();
+    if (logEvery > 0 && (impl->currentStep == 1 || impl->currentStep % logEvery == 0)) {
+        size_t processBytes = currentPhysFootprintBytes();
+        size_t imageBytes = impl->ds->cachedImageBytes();
+        size_t modelBytes = impl->model->estimatedGpuBytes();
+        size_t tempBytes = msplat_cached_tensor_bytes();
+        size_t accountedBytes = imageBytes + modelBytes + tempBytes;
+        fprintf(stderr,
+                "MSPLAT_MEM step=%d splats=%d phys=%.1fMB accounted=%.1fMB "
+                "model=%.1fMB temp=%.1fMB images=%.1fMB imageBudget=%.1fMB\n",
+                impl->currentStep,
+                (int)impl->model->means.size(0),
+                mb(processBytes), mb(accountedBytes),
+                mb(modelBytes), mb(tempBytes), mb(imageBytes),
+                mb(impl->ds->maxCachedImageBytes));
+    }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     float ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0f;

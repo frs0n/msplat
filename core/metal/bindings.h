@@ -1,11 +1,13 @@
 #ifndef MSPLAT_BINDINGS_H
 #define MSPLAT_BINDINGS_H
 
+#include <cstddef>
 #include <tuple>
 #include "metal_tensor.hpp"
 
 // Release all cached GPU tensors (call before exit to prevent GPU memory leak)
 void cleanup_msplat_metal();
+size_t msplat_cached_tensor_bytes();
 
 // Returns the Metal device used by the msplat context (void* in C++, id<MTLDevice> in ObjC++)
 #ifdef __OBJC__
