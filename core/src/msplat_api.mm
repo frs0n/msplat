@@ -12,6 +12,10 @@
 #include <algorithm>
 #include <numeric>
 #include <random>
+#include <cstdlib>
+#include <unordered_map>
+
+#include <TargetConditionals.h>
 
 namespace msplat {
 
@@ -19,8 +23,79 @@ namespace msplat {
 
 struct Dataset::Impl {
     InputData data;
-    std::vector<Camera> trainCams;
-    std::vector<Camera> testCams;
+    std::vector<size_t> trainIndices;
+    std::vector<size_t> testIndices;
+    float imageDownscaleFactor = 1.0f;
+    size_t maxCachedImageBytes = 0;
+    uint64_t imageCacheClock = 0;
+
+    struct CachedCamera {
+        uint64_t lastUse = 0;
+        size_t bytes = 0;
+    };
+    std::unordered_map<size_t, CachedCamera> cachedCameras;
+
+    static size_t defaultImageCacheBudgetBytes() {
+        if (const char* env = std::getenv("MSPLAT_IMAGE_CACHE_MB")) {
+            int mb = std::atoi(env);
+            if (mb > 0) return (size_t)mb * 1024 * 1024;
+        }
+#if TARGET_OS_IPHONE
+        return (size_t)512 * 1024 * 1024;
+#else
+        return (size_t)2048 * 1024 * 1024;
+#endif
+    }
+
+    Camera& trainCamera(size_t trainIndex) {
+        return data.cameras[trainIndices[trainIndex]];
+    }
+
+    Camera& testCamera(size_t testIndex) {
+        return data.cameras[testIndices[testIndex]];
+    }
+
+    MTensor& gpuImageForDataCamera(size_t dataCameraIndex, int downscaleFactor) {
+        Camera& cam = data.cameras[dataCameraIndex];
+        cam.loadImage(imageDownscaleFactor);
+        MTensor& image = cam.getGPUImage(downscaleFactor);
+
+        auto& cached = cachedCameras[dataCameraIndex];
+        cached.lastUse = ++imageCacheClock;
+        cached.bytes = cam.cachedImageBytes();
+        evictImageCache(dataCameraIndex);
+        return image;
+    }
+
+    MTensor& gpuImageForTrainCamera(size_t trainIndex, int downscaleFactor) {
+        return gpuImageForDataCamera(trainIndices[trainIndex], downscaleFactor);
+    }
+
+    MTensor& gpuImageForTestCamera(size_t testIndex, int downscaleFactor) {
+        return gpuImageForDataCamera(testIndices[testIndex], downscaleFactor);
+    }
+
+    void evictImageCache(size_t protectedCameraIndex) {
+        while (cachedImageBytes() > maxCachedImageBytes && cachedCameras.size() > 1) {
+            auto victim = cachedCameras.end();
+            for (auto it = cachedCameras.begin(); it != cachedCameras.end(); ++it) {
+                if (it->first == protectedCameraIndex) continue;
+                if (victim == cachedCameras.end() || it->second.lastUse < victim->second.lastUse) {
+                    victim = it;
+                }
+            }
+            if (victim == cachedCameras.end()) break;
+
+            data.cameras[victim->first].releaseImageMemory();
+            cachedCameras.erase(victim);
+        }
+    }
+
+    size_t cachedImageBytes() const {
+        size_t bytes = 0;
+        for (const auto& item : cachedCameras) bytes += item.second.bytes;
+        return bytes;
+    }
 };
 
 Dataset::Dataset(const std::string& path, float downscaleFactor,
@@ -28,17 +103,20 @@ Dataset::Dataset(const std::string& path, float downscaleFactor,
     : impl(std::make_unique<Impl>())
 {
     impl->data = inputDataFromX(path);
-
-    for (auto& cam : impl->data.cameras)
-        cam.loadImage(downscaleFactor);
+    impl->imageDownscaleFactor = downscaleFactor;
+    impl->maxCachedImageBytes = Impl::defaultImageCacheBudgetBytes();
 
     if (evalMode) {
-        auto split = impl->data.splitTrainTest(testEvery);
-        impl->trainCams = std::get<0>(split);
-        impl->testCams = std::get<1>(split);
+        for (int i = 0; i < (int)impl->data.cameras.size(); i++) {
+            if (i % testEvery == 0)
+                impl->testIndices.push_back(i);
+            else
+                impl->trainIndices.push_back(i);
+        }
     } else {
-        auto t = impl->data.getCameras(false);
-        impl->trainCams = std::get<0>(t);
+        impl->trainIndices.reserve(impl->data.cameras.size());
+        for (size_t i = 0; i < impl->data.cameras.size(); i++)
+            impl->trainIndices.push_back(i);
     }
 }
 
@@ -46,11 +124,11 @@ Dataset::~Dataset() = default;
 Dataset::Dataset(Dataset&&) noexcept = default;
 Dataset& Dataset::operator=(Dataset&&) noexcept = default;
 
-int Dataset::numTrain() const { return (int)impl->trainCams.size(); }
-int Dataset::numTest() const { return (int)impl->testCams.size(); }
+int Dataset::numTrain() const { return (int)impl->trainIndices.size(); }
+int Dataset::numTest() const { return (int)impl->testIndices.size(); }
 void Dataset::cameraPose(int index, float camToWorld[16]) const {
-    if (index >= 0 && index < (int)impl->trainCams.size())
-        memcpy(camToWorld, impl->trainCams[index].camToWorld, 16 * sizeof(float));
+    if (index >= 0 && index < (int)impl->trainIndices.size())
+        memcpy(camToWorld, impl->data.cameras[impl->trainIndices[index]].camToWorld, 16 * sizeof(float));
 }
 void* Dataset::_handle() const { return impl.get(); }
 
@@ -86,7 +164,7 @@ Trainer::Trainer(Dataset& dataset, const Config& config)
 
     impl->model = std::make_unique<Model>(
         impl->ds->data,
-        (int)impl->ds->trainCams.size(),
+        (int)impl->ds->trainIndices.size(),
         config.numDownscales, config.resolutionSchedule,
         config.shDegree, config.shDegreeInterval,
         config.refineEvery, config.warmupLength, config.resetAlphaEvery,
@@ -96,7 +174,7 @@ Trainer::Trainer(Dataset& dataset, const Config& config)
         config.bgColor
     );
 
-    impl->camIndices.resize(impl->ds->trainCams.size());
+    impl->camIndices.resize(impl->ds->trainIndices.size());
     std::iota(impl->camIndices.begin(), impl->camIndices.end(), 0);
     impl->shuffleCameras();
 }
@@ -106,10 +184,10 @@ Trainer::~Trainer() = default;
 Stats Trainer::step() {
     impl->currentStep++;
     size_t camIdx = impl->nextCamera();
-    Camera& cam = impl->ds->trainCams[camIdx];
+    Camera& cam = impl->ds->trainCamera(camIdx);
 
     int ds = impl->model->getDownscaleFactor(impl->currentStep);
-    MTensor& gt = cam.getGPUImage(ds);
+    MTensor& gt = impl->ds->gpuImageForTrainCamera(camIdx, ds);
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -137,20 +215,20 @@ void Trainer::train(int callbackEvery) {
 }
 
 EvalMetrics Trainer::evaluate() {
-    auto& testCams = impl->ds->testCams;
-    if (testCams.empty())
+    auto& testIndices = impl->ds->testIndices;
+    if (testIndices.empty())
         return {};
 
     double sumPsnr = 0, sumSsim = 0, sumL1 = 0;
-    int n = (int)testCams.size();
+    int n = (int)testIndices.size();
 
     for (int i = 0; i < n; i++) {
-        Camera& cam = testCams[i];
+        Camera& cam = impl->ds->testCamera(i);
         MTensor rgb = impl->model->render(cam, impl->config.iterations);
         msplat_gpu_sync();
         MTensor rgbCpu = rgb.cpu();
         int dsf = impl->model->getDownscaleFactor(impl->config.iterations);
-        MTensor gtCpu = cam.getGPUImage(dsf).cpu();
+        MTensor gtCpu = impl->ds->gpuImageForTestCamera(i, dsf).cpu();
 
         sumPsnr += psnr(rgbCpu, gtCpu);
         sumSsim += ssim_eval(rgbCpu, gtCpu);
@@ -167,11 +245,11 @@ EvalMetrics Trainer::evaluate() {
 }
 
 PixelBuffer Trainer::render(int cameraIndex, bool useTest) {
-    auto& cams = useTest ? impl->ds->testCams : impl->ds->trainCams;
-    if (cameraIndex < 0 || cameraIndex >= (int)cams.size())
+    auto& indices = useTest ? impl->ds->testIndices : impl->ds->trainIndices;
+    if (cameraIndex < 0 || cameraIndex >= (int)indices.size())
         return {};
 
-    Camera& cam = cams[cameraIndex];
+    Camera& cam = impl->ds->data.cameras[indices[cameraIndex]];
     MTensor rgb = impl->model->render(cam, impl->currentStep);
     msplat_gpu_sync();
     MTensor rgbCpu = rgb.cpu();
@@ -186,15 +264,15 @@ PixelBuffer Trainer::render(int cameraIndex, bool useTest) {
 }
 
 PixelBuffer Trainer::renderFromPose(const float camToWorld[16], int refCameraIndex) {
-    auto& cams = impl->ds->trainCams;
-    if (refCameraIndex < 0 || refCameraIndex >= (int)cams.size())
+    auto& indices = impl->ds->trainIndices;
+    if (refCameraIndex < 0 || refCameraIndex >= (int)indices.size())
         return {};
 
-    Camera cam = cams[refCameraIndex];  // copy intrinsics
+    Camera& ref = impl->ds->data.cameras[indices[refCameraIndex]];
+    Camera cam;
+    cam.width = ref.width; cam.height = ref.height;
+    cam.fx = ref.fx; cam.fy = ref.fy; cam.cx = ref.cx; cam.cy = ref.cy;
     memcpy(cam.camToWorld, camToWorld, 16 * sizeof(float));
-    // Invalidate cached matrices so prepareCam recomputes from the new pose
-    cam.cachedViewMat = MTensor();
-    cam.cachedProjViewMat = MTensor();
 
     MTensor rgb = impl->model->render(cam, impl->currentStep);
     msplat_gpu_sync();
@@ -209,15 +287,16 @@ PixelBuffer Trainer::renderFromPose(const float camToWorld[16], int refCameraInd
 
 void Trainer::renderFromPoseToBuffer(const float camToWorld[16], int refCameraIndex,
                                   uint8_t* outRGBA, int* outWidth, int* outHeight) {
-    auto& cams = impl->ds->trainCams;
-    if (refCameraIndex < 0 || refCameraIndex >= (int)cams.size()) {
+    auto& indices = impl->ds->trainIndices;
+    if (refCameraIndex < 0 || refCameraIndex >= (int)indices.size()) {
         *outWidth = 0; *outHeight = 0; return;
     }
 
-    Camera cam = cams[refCameraIndex];
+    Camera& ref = impl->ds->data.cameras[indices[refCameraIndex]];
+    Camera cam;
+    cam.width = ref.width; cam.height = ref.height;
+    cam.fx = ref.fx; cam.fy = ref.fy; cam.cx = ref.cx; cam.cy = ref.cy;
     memcpy(cam.camToWorld, camToWorld, 16 * sizeof(float));
-    cam.cachedViewMat = MTensor();
-    cam.cachedProjViewMat = MTensor();
 
     MTensor rgb = impl->model->render(cam, impl->currentStep);
     msplat_gpu_sync();

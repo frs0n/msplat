@@ -5,6 +5,7 @@
 #include <vector>
 #include <tuple>
 #include <unordered_map>
+#include <cstddef>
 #include "metal_tensor.hpp"
 
 // Simple float32 RGB image — replaces cv::Mat
@@ -27,13 +28,16 @@ struct Camera {
     Image image;
     std::unordered_map<int, Image> imagePyramids;
     std::unordered_map<int, MTensor> mtensorImageCache;
+    float loadedImageDownscaleFactor = 0.0f;
     MTensor cachedViewMat, cachedProjViewMat;
     float cachedCamPos[3] = {};
     float cachedFovX = 0, cachedFovY = 0;
 
     void loadImage(float downscaleFactor);
-    Image getImage(int downscaleFactor);
+    const Image& getImage(int downscaleFactor);
     MTensor& getGPUImage(int downscaleFactor);
+    void releaseImageMemory();
+    size_t cachedImageBytes() const;
     bool hasDistortion() const { return k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0; }
 };
 

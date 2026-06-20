@@ -15,6 +15,9 @@ using json = nlohmann::json;
 // ── Image loading ───────────────────────────────────────────────────────────
 
 void Camera::loadImage(float downscaleFactor) {
+    if (!image.empty() && loadedImageDownscaleFactor == downscaleFactor) return;
+    releaseImageMemory();
+
     Image raw = imreadRGB(filePath);
     if (raw.empty()) return;
 
@@ -49,9 +52,11 @@ void Camera::loadImage(float downscaleFactor) {
     }
 
     image = std::move(raw);
+    loadedImageDownscaleFactor = downscaleFactor;
 }
 
-Image Camera::getImage(int downscaleFactor) {
+const Image& Camera::getImage(int downscaleFactor) {
+    if (image.empty()) loadImage(1.0f);
     if (downscaleFactor <= 1) return image;
 
     auto it = imagePyramids.find(downscaleFactor);
@@ -60,18 +65,40 @@ Image Camera::getImage(int downscaleFactor) {
     int newW = image.width / downscaleFactor;
     int newH = image.height / downscaleFactor;
     Image scaled = resizeArea(image, newW, newH);
-    imagePyramids[downscaleFactor] = scaled;
-    return scaled;
+    auto inserted = imagePyramids.emplace(downscaleFactor, std::move(scaled));
+    return inserted.first->second;
 }
 
 MTensor& Camera::getGPUImage(int downscaleFactor) {
     auto it = mtensorImageCache.find(downscaleFactor);
     if (it != mtensorImageCache.end()) return it->second;
-    Image img = getImage(downscaleFactor);
+    const Image& img = getImage(downscaleFactor);
+    if (img.empty()) throw std::runtime_error("Failed to load image: " + filePath);
     MTensor mt = gpu_empty({img.height, img.width, 3}, DType::Float32);
     memcpy(mt.data_ptr(), img.ptr(), img.width * img.height * 3 * sizeof(float));
     mtensorImageCache[downscaleFactor] = mt;
     return mtensorImageCache[downscaleFactor];
+}
+
+void Camera::releaseImageMemory() {
+    image = Image();
+    imagePyramids.clear();
+    for (auto& item : mtensorImageCache) {
+        item.second.reset();
+    }
+    mtensorImageCache.clear();
+    loadedImageDownscaleFactor = 0.0f;
+}
+
+size_t Camera::cachedImageBytes() const {
+    size_t bytes = image.data.size() * sizeof(float);
+    for (const auto& item : imagePyramids) {
+        bytes += item.second.data.size() * sizeof(float);
+    }
+    for (const auto& item : mtensorImageCache) {
+        bytes += item.second.nbytes();
+    }
+    return bytes;
 }
 
 // ── Scale & center ──────────────────────────────────────────────────────────
