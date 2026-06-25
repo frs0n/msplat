@@ -2,10 +2,50 @@
 #include "msplat.hpp"
 #include <fstream>
 #include <algorithm>
-#include <numeric>
 #include <cmath>
+#include <iostream>
 
 static const double C0 = 0.28209479177387814;
+static constexpr float kMaxSplatScale = 1.0e6f;
+
+static float sigmoid(float x) {
+    if (x >= 0.0f) {
+        float z = std::exp(-x);
+        return 1.0f / (1.0f + z);
+    }
+    float z = std::exp(x);
+    return z / (1.0f + z);
+}
+
+static bool validSplatGaussian(const GaussianParams &p, int64_t i,
+                               const float *mp, const float *sp, const float *qp,
+                               const float *dp, const float *op) {
+    for (int j = 0; j < 3; j++) {
+        float m = p.keepCrs ? (mp[i*3+j] / p.scale + p.translation[j]) : mp[i*3+j];
+        if (!std::isfinite(m)) return false;
+
+        float rawScale = sp[i*3+j];
+        if (!std::isfinite(rawScale)) return false;
+        float scale = std::exp(rawScale);
+        if (p.keepCrs) scale /= p.scale;
+        if (!std::isfinite(scale) || scale <= 0.0f || scale > kMaxSplatScale) return false;
+
+        if (!std::isfinite(dp[i*3+j])) return false;
+    }
+
+    float alpha = sigmoid(op[i]);
+    if (!std::isfinite(op[i]) || !std::isfinite(alpha)) return false;
+
+    float quatNormSq = 0.0f;
+    for (int j = 0; j < 4; j++) {
+        float q = qp[i*4+j];
+        if (!std::isfinite(q)) return false;
+        quatNormSq += q * q;
+    }
+    if (!std::isfinite(quatNormSq) || quatNormSq <= 0.0f) return false;
+
+    return true;
+}
 
 void saveGaussianPly(const std::string &path, GaussianParams &p, int step) {
     msplat_gpu_sync();
@@ -61,18 +101,27 @@ void saveGaussianSplat(const std::string &path, GaussianParams &p) {
     const float *mp = p.means.data<float>(), *sp = p.scales.data<float>(), *qp = p.quats.data<float>();
     const float *dp = p.featuresDc.data<float>(), *op = p.opacities.data<float>();
 
+    std::vector<size_t> idx;
+    idx.reserve(N);
+    for (int64_t i = 0; i < N; i++) {
+        if (validSplatGaussian(p, i, mp, sp, qp, dp, op)) idx.push_back((size_t)i);
+    }
+
     // Sort by size/opacity (largest first)
     std::vector<float> order(N);
-    for (int64_t i = 0; i < N; i++) {
+    for (size_t i : idx) {
         float s = std::exp(sp[i*3]) + std::exp(sp[i*3+1]) + std::exp(sp[i*3+2]);
         if (p.keepCrs) s /= p.scale;
-        order[i] = s / (1.0f + std::exp(-op[i]));
+        order[i] = s * sigmoid(op[i]);
     }
-    std::vector<size_t> idx(N);
-    std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b){ return order[a] > order[b]; });
 
-    for (int64_t ii = 0; ii < N; ii++) {
+    if ((int64_t)idx.size() != N) {
+        std::cerr << "Filtered " << (N - (int64_t)idx.size())
+                  << " abnormal gaussians while exporting " << path << std::endl;
+    }
+
+    for (size_t ii = 0; ii < idx.size(); ii++) {
         size_t i = idx[ii];
         float m[3];
         for (int j = 0; j < 3; j++) m[j] = p.keepCrs ? (mp[i*3+j] / p.scale + p.translation[j]) : mp[i*3+j];
@@ -86,7 +135,7 @@ void saveGaussianSplat(const std::string &path, GaussianParams &p) {
         for (int j = 0; j < 3; j++) rgb[j] = (uint8_t)std::clamp(((double)dp[i*3+j] * C0 + 0.5) * 255.0, 0.0, 255.0);
         o.write(reinterpret_cast<const char*>(rgb), 3);
 
-        float sig = 1.0f / (1.0f + std::exp(-op[i]));
+        float sig = sigmoid(op[i]);
         uint8_t a = (uint8_t)std::clamp(sig * 255.0f, 0.0f, 255.0f);
         o.write(reinterpret_cast<const char*>(&a), 1);
 
