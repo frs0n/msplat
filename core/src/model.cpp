@@ -11,6 +11,36 @@ namespace fs = std::filesystem;
 
 static const double C0 = 0.28209479177387814;
 
+namespace {
+
+void quaternionFromLocalZToNormal(const float *normal, float *quat) {
+    float nx = normal[0], ny = normal[1], nz = normal[2];
+    float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+    if (!std::isfinite(len) || len <= 1.0e-12f) {
+        quat[0] = 1.0f; quat[1] = 0.0f; quat[2] = 0.0f; quat[3] = 0.0f;
+        return;
+    }
+
+    nx /= len; ny /= len; nz /= len;
+    if (nz < -0.9999f) {
+        quat[0] = 0.0f; quat[1] = 1.0f; quat[2] = 0.0f; quat[3] = 0.0f;
+        return;
+    }
+
+    // Internal quaternion storage is [w, x, y, z]. This rotates local +Z to normal.
+    float w = 1.0f + nz;
+    float x = -ny;
+    float y = nx;
+    float z = 0.0f;
+    float invNorm = 1.0f / std::sqrt(w * w + x * x + y * y + z * z);
+    quat[0] = w * invNorm;
+    quat[1] = x * invNorm;
+    quat[2] = y * invNorm;
+    quat[3] = z * invNorm;
+}
+
+} // namespace
+
 int numShBases(int degree){
     switch(degree){
         case 0: return 1;
@@ -60,30 +90,26 @@ Model::Model(const InputData &inputData, int numCameras,
     means = gpu_empty({numPoints, 3}, DType::Float32);
     memcpy(means.data_ptr(), inputData.points.xyz.data(), numPoints * 3 * sizeof(float));
 
-    // Scales: KD-tree nearest neighbor distances, log'd, repeated 3x
+    // PocketGS-style surface-aware initialization: tangent scales from local
+    // point density, thin normal scale, and quaternion aligned to local normal.
     {
+        static constexpr float normalScaleRatio = 0.2f;
         PointsTensor pt(inputData.points.xyz.data(), numPoints);
-        auto sc = pt.scales();  // vector<float> of length numPoints
+        auto init = pt.surfaceInit(16, 3);
         scales = gpu_empty({numPoints, 3}, DType::Float32);
         float *sp = scales.data<float>();
         for (int64_t i = 0; i < numPoints; i++) {
-            float v = std::log(sc[i]);
-            sp[i*3] = sp[i*3+1] = sp[i*3+2] = v;
+            float tangent = std::max(init.tangentScales[i], 1.0e-6f);
+            float normal = std::max(tangent * normalScaleRatio, 1.0e-6f);
+            sp[i*3] = std::log(tangent);
+            sp[i*3+1] = std::log(tangent);
+            sp[i*3+2] = std::log(normal);
         }
-    }
 
-    // Random quaternions
-    {
-        std::mt19937 rng(42);
-        std::uniform_real_distribution<float> dist(0.0f, 1.0f);
         quats = gpu_empty({numPoints, 4}, DType::Float32);
         float *qp = quats.data<float>();
         for (int64_t i = 0; i < numPoints; i++) {
-            float u = dist(rng), v = dist(rng), w = dist(rng);
-            qp[i*4+0] = std::sqrt(1-u) * std::sin(2*M_PI*v);
-            qp[i*4+1] = std::sqrt(1-u) * std::cos(2*M_PI*v);
-            qp[i*4+2] = std::sqrt(u) * std::sin(2*M_PI*w);
-            qp[i*4+3] = std::sqrt(u) * std::cos(2*M_PI*w);
+            quaternionFromLocalZToNormal(&init.normals[i * 3], &qp[i * 4]);
         }
     }
 
