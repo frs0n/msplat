@@ -18,6 +18,7 @@ if [[ -z "${DEVELOPER_DIR:-}" ]]; then
 fi
 
 SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+IOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET:-18.0}"
 
 find_artifact() {
     local name="$1"
@@ -40,7 +41,9 @@ cmake -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
-    -DCMAKE_OSX_SYSROOT="$SDK_PATH"
+    -DCMAKE_OSX_SYSROOT="$SDK_PATH" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+    -DMSPLAT_METAL_IOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
 
 echo "=== Building msplat device artifacts ==="
 cmake --build "$BUILD_DIR" --config Release -j

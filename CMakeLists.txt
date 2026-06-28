@@ -54,20 +54,31 @@ find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 
 # --- Compile Metal shaders ---
 
+set(MSPLAT_METAL_LANGUAGE_STANDARD "metal4.0" CACHE STRING "Metal language standard for precompiled shader libraries")
+set(MSPLAT_METAL_IOS_DEPLOYMENT_TARGET "18.0" CACHE STRING "Minimum iOS version for precompiled shader libraries")
+set(MSPLAT_METAL_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS version for precompiled shader libraries")
+
+set(MSPLAT_METAL_SDK "macosx")
+set(MSPLAT_METAL_DEPLOYMENT_FLAG "-mmacosx-version-min=${MSPLAT_METAL_MACOS_DEPLOYMENT_TARGET}")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(MSPLAT_METAL_SDK "iphoneos")
+    set(MSPLAT_METAL_DEPLOYMENT_FLAG "-mios-version-min=${MSPLAT_METAL_IOS_DEPLOYMENT_TARGET}")
+endif()
+
 set(METAL_SOURCE ${CMAKE_SOURCE_DIR}/core/metal/msplat_metal.metal)
 configure_file(${METAL_SOURCE} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/msplat_metal.metal COPYONLY)
 add_custom_command(
     OUTPUT ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
-    COMMAND xcrun -sdk macosx metal -O3 -c
+    COMMAND xcrun -sdk ${MSPLAT_METAL_SDK} metal -O3 -std=${MSPLAT_METAL_LANGUAGE_STANDARD} ${MSPLAT_METAL_DEPLOYMENT_FLAG} -c
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/msplat_metal.metal
         -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/msplat_metal.air
-    COMMAND xcrun -sdk macosx metallib
+    COMMAND xcrun -sdk ${MSPLAT_METAL_SDK} metallib
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/msplat_metal.air
         -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
     COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/msplat_metal.air
     COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/msplat_metal.metal
     DEPENDS ${METAL_SOURCE}
-    COMMENT "Compiling Metal kernels → default.metallib"
+    COMMENT "Compiling Metal kernels -> default.metallib"
 )
 add_custom_target(metallib ALL
     DEPENDS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib)
